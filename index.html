@@ -290,14 +290,14 @@ const CX = 1, CZ = 8.5; // crossing of the Great Hall
 /* ================= quality ================= */
 const Q = isTouch
   ? { pr:Math.min(window.devicePixelRatio||1, 1.5), shadow:1024, grass:7000, sphere:[8,6], bloomScale:.5, lamps:5, grassR:30 }
-  : { pr:Math.min(window.devicePixelRatio||1, 1.6), shadow:2048, grass:16000, sphere:[10,7], bloomScale:.5, lamps:8, grassR:36 };
+  : { pr:Math.min(window.devicePixelRatio||1, 1.5), shadow:2048, grass:11000, sphere:[10,7], bloomScale:.5, lamps:6, grassR:32 };
 
 /* ================= renderer / scene ================= */
 const stage = $("#stage");
-const renderer = new THREE.WebGLRenderer({ antialias:true, powerPreference:"high-performance" });
+const renderer = new THREE.WebGLRenderer({ antialias:false, powerPreference:"high-performance" });
 renderer.setPixelRatio(Q.pr); renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.outputEncoding = THREE.sRGBEncoding; renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.2;
-renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap; renderer.shadowMap.autoUpdate = false;
+renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFShadowMap; renderer.shadowMap.autoUpdate = false;
 renderer.domElement.setAttribute("tabindex","0"); stage.appendChild(renderer.domElement);
 const maxAniso = renderer.capabilities.getMaxAnisotropy ? Math.min(8, renderer.capabilities.getMaxAnisotropy()) : 4;
 const scene = new THREE.Scene();
@@ -1106,7 +1106,7 @@ function buildGallery(){
   mergeStatic(Gg);
 }
 function loadGallery(){ if (GALLERY.loaded) return; GALLERY.loaded=true; const maxA=Math.min(4, renderer.capabilities.getMaxAnisotropy());
-  GALLERY.mats.forEach(([pm,p],i)=>setTimeout(()=>{ const img=new Image(); img.onload=()=>{ const t=new THREE.Texture(img); t.encoding=THREE.sRGBEncoding; t.anisotropy=maxA; t.needsUpdate=true; pm.map=t; pm.color.setScalar(.92); pm.needsUpdate=true; }; img.src=p.src; }, i*70)); }
+  GALLERY.mats.forEach(([pm,p],i)=>setTimeout(()=>{ const img=new Image(); img.onload=()=>{ const t=new THREE.Texture(img); t.encoding=THREE.sRGBEncoding; t.anisotropy=maxA; t.needsUpdate=true; pm.map=t; pm.toneMapped=false; pm.color.setScalar(GALLERY.v||.66); GALLERY.v=0; pm.needsUpdate=true; }; img.src=p.src; }, i*70)); }
 
 /* ================= Carlton Gardens North Playground =================
    Measured from high-resolution aerial imagery (walls, heights from their shadows, holes, towers, surfaces,
@@ -1724,21 +1724,33 @@ function updateCamera(dt){
 $("#hint").innerHTML="<span><kbd>W A S D</kbd>walk</span><span><kbd>Shift</kbd>walk faster</span><span>Drag to look</span><span><kbd>E</kbd>read a note</span><span><kbd>M</kbd>map</span><span><kbd>B</kbd>from above</span>";
 $("#introHow").textContent = isTouch ? "Walk with your left thumb and drag anywhere else to look around." : "Walk with W A S D or the arrow keys and drag with the mouse to look around.";
 if (isTouch){ joy.hidden=false; $("#hint").hidden=true; }
-const perf={ start:0, frames:0, sum:0, level:0, shadowEvery:2, lampMax:99, n:0 };
+const perf={ start:0, frames:0, sum:0, level:0, shadowEvery:1, lampMax:99, n:0, last:0, skip:0, ref:.0167, half:false, tick:0, samples:[] };
 function enter(key){ $("#intro").hidden=true; started=true; if (key!==timeKey) setTime(key,.01); if ($("#soundOn").checked) Snd.set(true); cv.focus({preventScroll:true}); perf.start=performance.now(); placeNow=""; setTimeout(()=>{ $("#hint").style.opacity="0"; },16000); }
 $("#enterNight").addEventListener("click", ()=>enter("night"));
 $("#enterDawn").addEventListener("click", ()=>enter("dawn"));
-function adapt(dt){ if (!started || perf.level>=4) return; if (performance.now()-perf.start<2500) return; perf.frames++; perf.sum+=dt;
-  if (perf.frames>=90){ const avg=perf.sum/perf.frames; perf.frames=0; perf.sum=0; if (avg>.036){ perf.level++;
-    if (perf.level===1){ renderer.setPixelRatio(1); if (composer){ composer.setPixelRatio(1); composer.setSize(innerWidth,innerHeight); } if (grassMesh) grassMesh.visible=false; }
-    if (perf.level===2){ perf.lampMax=3; perf.shadowEvery=4; }
-    if (perf.level===3){ if (bloomPass) bloomPass.enabled=false; perf.shadowEvery=8; }
-    if (perf.level===4){ perf.shadowEvery=1e9; sun.castShadow=false; renderer.shadowMap.needsUpdate=true; } } } }
+function setPR(pr){ renderer.setPixelRatio(pr); if (composer){ composer.setPixelRatio(pr); composer.setSize(innerWidth,innerHeight); } }
+const PERF_STEPS=[
+  ()=>{ if (Q.pr<=1.2) return false; setPR(1.2); },
+  ()=>{ if (perf.ref>.011) return false; perf.half=true; },            // a 120 Hz screen it cannot keep up with: hold a steady 60 instead of an uneven 80
+  ()=>{ setPR(1); },
+  ()=>{ if (grassMesh) grassMesh.visible=false; perf.lampMax=4; perf.shadowEvery=2; },
+  ()=>{ if (bloomPass) bloomPass.enabled=false; perf.lampMax=3; perf.shadowEvery=4; },
+  ()=>{ setPR(.8); },
+  ()=>{ perf.shadowEvery=1e9; sun.castShadow=false; renderer.shadowMap.needsUpdate=true; } ];
+// measure real frame times against this screen's refresh rate and step the quality down until walking is smooth
+function adapt(){ const now=performance.now(); let raw=(now-perf.last)/1000; perf.last=now; if (raw>1.5 || raw<=0) return; raw=Math.min(raw,.25);
+  if (!perf.half){ perf.samples.push(raw); if (perf.samples.length>90) perf.samples.shift(); }
+  if (!started || now-perf.start<2000 || perf.level>=PERF_STEPS.length) return; if (perf.skip>0){ perf.skip--; return; }
+  perf.frames++; perf.sum+=raw;
+  if (perf.frames>=45){ const avg=perf.sum/perf.frames; perf.frames=0; perf.sum=0;
+    if (!perf.half && perf.samples.length>40){ const q=perf.samples.slice().sort((a,b)=>a-b)[Math.floor(perf.samples.length*.2)]; perf.ref = q<.0075?.00694 : q<.0105?.00833 : q<.0125?.0111 : q<.0148?.0133 : .0167; }
+    if (avg>perf.ref*(perf.half?2:1)*1.28){ let done=false; while (!done && perf.level<PERF_STEPS.length){ done = PERF_STEPS[perf.level++]()!==false; } perf.skip=30; } } }
 
 /* ================= loop ================= */
 const clock=new THREE.Clock(); let elapsed=0, lampTimer=0;
 function frame(){
   requestAnimationFrame(frame);
+  if (perf.half && (perf.tick++ & 1)) return; adapt();
   const dt=Math.min(clock.getDelta(),.05); elapsed+=dt; timeU.value=elapsed;
   if (started && !uiOpen){
     let f=0, s=0, turn=0;
@@ -1754,7 +1766,7 @@ function frame(){
   sky.position.copy(camera.position); stars.position.set(camera.position.x,0,camera.position.z);
   lampTimer-=dt; if (lampTimer<=0){ lampTimer=.3; assignLampLights(); }
   updateGrass(player.x,player.z);
-  applyTime(dt); refreshPrompt(false); if (!$("#map").hidden) updateMapPlayer(); Snd.tick(dt); adapt(dt); if (started) updatePlace(dt);
+  applyTime(dt); refreshPrompt(false); if (!$("#map").hidden) updateMapPlayer(); Snd.tick(dt); if (started) updatePlace(dt);
   waterNormalTex.offset.set(elapsed*.012, elapsed*.008); curtainTex.offset.y=-elapsed*1.1;
   STOPS.forEach((s,i)=>{ const y=(s.kind==="finale"?2.6:2.4)+Math.sin(elapsed*1.2+i)*.12; s.glow.position.y=y; s.mote.position.y=y; s.mote.position.x=Math.sin(elapsed*.9+i)*.15; const p=1+Math.sin(elapsed*1.8+i)*.12; s.glow.scale.set(1.6*p,1.6*p,1); if (s.float){ s.float.position.y=2.15+Math.sin(elapsed*1.4)*.1; s.float.rotation.y=elapsed*.6; } });
   ducks.forEach(d=>{ const u=d.userData; u.t+=u.sp*dt; let x=u.cx+Math.cos(u.t)*u.r, z=u.cz+Math.sin(u.t)*u.r; if (!inPoly(x,z,u.P) || u.H.some(H=>inPoly(x,z,H))){ u.sp=-u.sp; u.t+=u.sp*dt*2; x=u.cx+Math.cos(u.t)*u.r; z=u.cz+Math.sin(u.t)*u.r; } d.position.set(x,.15+Math.sin(elapsed*2.6+u.t)*.015,z); d.rotation.y=Math.atan2(-Math.sin(u.t),Math.cos(u.t))*(u.sp>0?1:-1)+Math.PI; });
@@ -1777,7 +1789,9 @@ function frame(){
       fwLife[k]-=dt; fwV[k*3]*=.985; fwV[k*3+1]=fwV[k*3+1]*.985-4.2*dt; fwV[k*3+2]*=.985; p[k*3]+=fwV[k*3]*dt; p[k*3+1]+=fwV[k*3+1]*dt; p[k*3+2]+=fwV[k*3+2]*dt;
       const f=Math.max(fwLife[k]/fwMax[k],0), a=f*f*(f>.92?(1-f)*12.5:1); c[k*3]=fwBase[k*3]*a; c[k*3+1]=fwBase[k*3+1]*a; c[k*3+2]=fwBase[k*3+2]*a; }
     if (any){ fw.geometry.attributes.position.needsUpdate=true; fw.geometry.attributes.color.needsUpdate=true; } }
-  perf.n++; if (perf.n % (aerial.on ? perf.shadowEvery*2 : perf.shadowEvery) === 0 || perf.n<4) renderer.shadowMap.needsUpdate = true;
+  perf.n++; { const se = insideF>.95 ? 15 : aerial.on ? Math.max(3,perf.shadowEvery*2) : perf.shadowEvery; if (perf.n % se === 0 || perf.n<4) renderer.shadowMap.needsUpdate = true; }
+  // photographs stay just under the bloom threshold so bright ones never glow out
+  if (GALLERY.loaded){ const v=clamp(cur.bloomT+insideF*.08-.05,.5,.95); if (v!==GALLERY.v){ GALLERY.v=v; GALLERY.mats.forEach(m=>{ if (m[0].map) m[0].color.setScalar(v); }); } }
   if (composer){ if (finalPass) finalPass.uniforms.uTime.value=elapsed; composer.render(dt); } else renderer.render(scene, camera);
 }
 addEventListener("resize", ()=>{ camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth,innerHeight); if (composer) composer.setSize(innerWidth,innerHeight); });
@@ -1785,7 +1799,7 @@ if (document.fonts && document.fonts.ready){ document.fonts.ready.then(()=>{ RED
 assignLampLights();
 updateGrass(player.x, player.z);
 if (wantAerial){ $("#intro").hidden=true; started=true; setAerial(true); aerial.t=1; }
-window.__huhu={ setLevel:(l)=>{ level=l; }, PG:D.pg, top:()=>{ const L=[]; scene.traverse(o=>{ if (!o.isMesh||!o.visible) return; const g=o.geometry; let t=(g.index?g.index.count:g.attributes.position.count)/3; if (o.isInstancedMesh) t*=o.count; L.push([Math.round(t), o.isInstancedMesh?('inst x'+o.count):'mesh', g.type, o.castShadow?'shadow':'', (Array.isArray(o.material)?o.material[0]:o.material).color?('#'+(Array.isArray(o.material)?o.material[0]:o.material).color.getHexString()):'']); }); L.sort((a,b)=>b[0]-a[0]); return { total:L.reduce((a,b)=>a+b[0],0), shadow:L.filter(l=>l[3]).reduce((a,b)=>a+b[0],0), top:L.slice(0,28) }; }, LANDMARKS, LAMPS, TREES, colCircles, colSegs, isPaved, isWater, isBlocked, insideREB, celebrate:()=>celebrate(), stats:()=>{ renderer.info.autoReset=false; renderer.info.reset(); renderer.shadowMap.needsUpdate=true; if (composer) composer.render(.016); else renderer.render(scene,camera); const r={ calls:renderer.info.render.calls, tris:renderer.info.render.triangles, geos:renderer.info.memory.geometries, tex:renderer.info.memory.textures }; renderer.info.autoReset=true; return r; }, walk:(x,z,dx,dz,dist,keep)=>{ if (!keep){ level=0; player.x=x; player.z=z; } const L=Math.hypot(dx,dz); for (let d=0; d<dist; d+=.15){ moveBy(dx/L*.15, dz/L*.15); } return [+player.x.toFixed(2), +player.z.toFixed(2), insideREB(player.x,player.z), level, +levelY().toFixed(2)]; }, built:performance.now(), info:()=>{ let n=0; scene.traverse(o=>{ if(o.isMesh) n++; }); return { meshes:n, calls:renderer.info.render.calls, tris:renderer.info.render.triangles }; }, player, travelTo, setAerial, setTime, aerial, openStop:(i)=>openStop(STOPS[i]), STOPS };
+window.__huhu={ perf, setLevel:(l)=>{ level=l; }, PG:D.pg, top:()=>{ const L=[]; scene.traverse(o=>{ if (!o.isMesh||!o.visible) return; const g=o.geometry; let t=(g.index?g.index.count:g.attributes.position.count)/3; if (o.isInstancedMesh) t*=o.count; L.push([Math.round(t), o.isInstancedMesh?('inst x'+o.count):'mesh', g.type, o.castShadow?'shadow':'', (Array.isArray(o.material)?o.material[0]:o.material).color?('#'+(Array.isArray(o.material)?o.material[0]:o.material).color.getHexString()):'']); }); L.sort((a,b)=>b[0]-a[0]); return { total:L.reduce((a,b)=>a+b[0],0), shadow:L.filter(l=>l[3]).reduce((a,b)=>a+b[0],0), top:L.slice(0,28) }; }, LANDMARKS, LAMPS, TREES, colCircles, colSegs, isPaved, isWater, isBlocked, insideREB, celebrate:()=>celebrate(), stats:()=>{ renderer.info.autoReset=false; renderer.info.reset(); renderer.shadowMap.needsUpdate=true; if (composer) composer.render(.016); else renderer.render(scene,camera); const r={ calls:renderer.info.render.calls, tris:renderer.info.render.triangles, geos:renderer.info.memory.geometries, tex:renderer.info.memory.textures }; renderer.info.autoReset=true; return r; }, walk:(x,z,dx,dz,dist,keep)=>{ if (!keep){ level=0; player.x=x; player.z=z; } const L=Math.hypot(dx,dz); for (let d=0; d<dist; d+=.15){ moveBy(dx/L*.15, dz/L*.15); } return [+player.x.toFixed(2), +player.z.toFixed(2), insideREB(player.x,player.z), level, +levelY().toFixed(2)]; }, built:performance.now(), info:()=>{ let n=0; scene.traverse(o=>{ if(o.isMesh) n++; }); return { meshes:n, calls:renderer.info.render.calls, tris:renderer.info.render.triangles }; }, player, travelTo, setAerial, setTime, aerial, openStop:(i)=>openStop(STOPS[i]), STOPS };
 $("#loading").hidden=true;
 frame();
 })();
